@@ -31,29 +31,23 @@ class GroupedQueryAttention(AbstractAttention):
         cfg = HookedTransformerConfig.unwrap(cfg)
         assert cfg.n_key_value_heads is not None
         super().__init__(cfg, attn_type, layer_id)
+
         self.repeat_kv_heads = cfg.n_heads // cfg.n_key_value_heads
+
         self._W_K = nn.Parameter(
-            torch.empty(
-                cfg.n_key_value_heads,
-                self.cfg.d_model,
-                self.cfg.d_head,
-                dtype=cfg.dtype,
-            )
+            torch.empty(cfg.n_key_value_heads, cfg.d_model, cfg.d_head, dtype=cfg.dtype)
         )
         self._W_V = nn.Parameter(
-            torch.empty(
-                cfg.n_key_value_heads,
-                self.cfg.d_model,
-                self.cfg.d_head,
-                dtype=cfg.dtype,
-            )
+            torch.empty(cfg.n_key_value_heads, cfg.d_model, cfg.d_head, dtype=cfg.dtype)
         )
-        self._b_K = nn.Parameter(
-            torch.zeros(cfg.n_key_value_heads, self.cfg.d_head, dtype=cfg.dtype)
-        )
-        self._b_V = nn.Parameter(
-            torch.zeros(cfg.n_key_value_heads, self.cfg.d_head, dtype=cfg.dtype)
-        )
+
+        # Initialize QK normalization if needed
+        if cfg.use_qk_norm:
+            self.q_norm = RMSNorm(cfg, cfg.d_head)
+            self.k_norm = RMSNorm(cfg, cfg.d_head)
+        else:
+            self.q_norm = None
+            self.k_norm = None
 
     @property
     def W_K(self):
@@ -70,22 +64,6 @@ class GroupedQueryAttention(AbstractAttention):
     @W_V.setter
     def W_V(self, value):
         self._W_V = value
-
-    @property
-    def b_K(self):
-        return torch.repeat_interleave(self._b_K, dim=0, repeats=self.repeat_kv_heads)
-
-    @b_K.setter
-    def b_K(self, value):
-        self._b_K = value
-
-    @property
-    def b_V(self):
-        return torch.repeat_interleave(self._b_V, dim=0, repeats=self.repeat_kv_heads)
-
-    @b_V.setter
-    def b_V(self, value):
-        self._b_V = value
 
     def calculate_qkv_matrices(
         self,
@@ -106,39 +84,26 @@ class GroupedQueryAttention(AbstractAttention):
         Float[torch.Tensor, "batch pos kv_head_index d_head"],
         Float[torch.Tensor, "batch pos kv_head_index d_head"],
     ]:
-        """Calculate the Q, K, and V matrices for grouped query attention.
-        This function uses the unexpanded weights _W_K and _W_V to calculate K and V.
-
-        Args:
-        query_input (Union[Float[torch.Tensor, "batch pos d_model"], Float[torch.Tensor, "batch pos head_index d_model"]]): The input tensor for the query projection.
-        key_input (Union[Float[torch.Tensor, "batch pos d_model"], Float[torch.Tensor, "batch pos kv_head_index d_model"]]): The input tensor for the key projection. Note that is has as many head dimensions as the GPA block has key-value heads.
-        value_input (Union[Float[torch.Tensor, "batch pos d_model"], Float[torch.Tensor, "batch pos kv_head_index d_model"]]): The input tensor for the value projection. Note that is has as many head dimensions as the GPA block has key-value heads.
-
-        Returns:
-        Tuple[Float[torch.Tensor, "batch pos head_index d_head"], Float[torch.Tensor, "batch pos kv_head_index d_head"], Float[torch.Tensor, "batch pos kv_head_index d_head"]]:
-        A tuple containing the Q, K, and V matrices with the specified shapes.
-        """
+        """Calculate the Q, K, and V matrices for grouped query attention."""
         attn_fn = (
             complex_attn_linear
             if self.cfg.use_split_qkv_input or self.cfg.use_attn_in
             else simple_attn_linear
         )
 
-        q = self.hook_q(
-            attn_fn(query_input, self.W_Q, self.b_Q)
-        )  # [batch, pos, head_index, d_head]
-
+        q = self.hook_q(attn_fn(query_input, self.W_Q))
         k = self.hook_k(
-            attn_fn(key_input, self.W_K, self.b_K)
+            attn_fn(key_input, self.W_K)
             if self.cfg.ungroup_grouped_query_attention
-            else attn_fn(key_input, self._W_K, self._b_K)
-        )  # [batch, pos, head_index, d_head]
+            else attn_fn(key_input, self._W_K)
+        )
         v = self.hook_v(
-            attn_fn(value_input, self.W_V, self.b_V)
+            attn_fn(value_input, self.W_V)
             if self.cfg.ungroup_grouped_query_attention
-            else attn_fn(value_input, self._W_V, self._b_V)
+            else attn_fn(value_input, self._W_V)
         )  # [batch, pos, head_index, d_head]
 
+        # Apply QK normalization if configured
         if self.cfg.use_qk_norm:
             assert self.q_norm is not None
             assert self.k_norm is not None
