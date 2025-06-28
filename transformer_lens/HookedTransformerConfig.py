@@ -1,3 +1,4 @@
+
 """Hooked Transformer Config.
 
 Module with a dataclass for storing the configuration of a
@@ -192,6 +193,7 @@ class HookedTransformerConfig:
         NTK_by_parts_factor (float): The overall factor used in the "NTK-by-parts" method that
             affects the rate of change between low and high-frequency interpolation strategies.
             Defaults to 8.0.
+        NTK_original_ctx_len (int): The original context length for NTK scaling. Defaults to 8192.
         rope_local_base_freq (float): The base frequency for rotary positional embeddings in local attention layers.
             Used in hybrid RoPE configurations where different base frequencies are used for local and global attention.
             Defaults to 10000.0, which is the standard RoPE base frequency.
@@ -215,6 +217,7 @@ class HookedTransformerConfig:
     use_split_qkv_input: bool = False
     use_hook_mlp_in: bool = False
     use_attn_in: bool = False
+    use_qk_norm: bool = False
     use_local_attn: bool = False
     ungroup_grouped_query_attention: bool = False
     original_architecture: Optional[str] = None
@@ -266,6 +269,7 @@ class HookedTransformerConfig:
     NTK_by_parts_low_freq_factor: float = 1.0
     NTK_by_parts_high_freq_factor: float = 4.0
     NTK_by_parts_factor: float = 8.0
+    NTK_original_ctx_len: int = 8192
     rope_local_base_freq: float = 10000.0
 
     def __post_init__(self):

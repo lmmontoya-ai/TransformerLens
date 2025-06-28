@@ -4,7 +4,8 @@ import torch
 import torch.nn as nn
 from jaxtyping import Float
 
-from transformer_lens.components import AbstractAttention, RMSNorm
+from transformer_lens.components import AbstractAttention
+from transformer_lens.components.rms_norm import RMSNorm
 from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
 from transformer_lens.utilities.attention import complex_attn_linear, simple_attn_linear
 
@@ -40,9 +41,13 @@ class GroupedQueryAttention(AbstractAttention):
             torch.empty(cfg.n_key_value_heads, cfg.d_model, cfg.d_head, dtype=cfg.dtype)
         )
 
-        # Per-vector RMSNorm (matches HF Gemma-3)
-        self.q_norm = RMSNorm(cfg, cfg.d_head)
-        self.k_norm = RMSNorm(cfg, cfg.d_head)
+        # Initialize QK normalization if needed
+        if cfg.use_qk_norm:
+            self.q_norm = RMSNorm(cfg, cfg.d_head)
+            self.k_norm = RMSNorm(cfg, cfg.d_head)
+        else:
+            self.q_norm = None
+            self.k_norm = None
 
     @property
     def W_K(self):
@@ -96,11 +101,14 @@ class GroupedQueryAttention(AbstractAttention):
             attn_fn(value_input, self.W_V)
             if self.cfg.ungroup_grouped_query_attention
             else attn_fn(value_input, self._W_V)
-        )
+        )  # [batch, pos, head_index, d_head]
 
-        # Apply full per-vector RMSNorm to q/k (matches HF Gemma 3)
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        # Apply QK normalization if configured
+        if self.cfg.use_qk_norm:
+            assert self.q_norm is not None
+            assert self.k_norm is not None
+            q = self._apply_qk_norm(q, self.q_norm)
+            k = self._apply_qk_norm(k, self.k_norm)
 
         return q, k, v
 
@@ -141,3 +149,21 @@ class GroupedQueryAttention(AbstractAttention):
         if not self.cfg.ungroup_grouped_query_attention:
             v = torch.repeat_interleave(v, dim=2, repeats=self.repeat_kv_heads)
         return super().calculate_z_scores(v, pattern)
+
+    def _apply_qk_norm(
+        self, x: Float[torch.Tensor, "batch pos head_index d_head"], norm_module: RMSNorm
+    ) -> Float[torch.Tensor, "batch pos head_index d_head"]:
+        """Apply QK normalization with proper reshaping.
+
+        Args:
+            x: Input tensor with shape [batch, pos, head_index, d_head]
+            norm_module: RMSNorm module to apply
+
+        Returns:
+            Normalized tensor with same shape as input
+        """
+        # Reshape from [batch, pos, head_index, d_head] to [batch * pos * head_index, d_head]
+        batch, pos, n_heads, d_head = x.shape
+        x_reshaped = x.reshape(-1, d_head)
+        x_normed = norm_module(x_reshaped)
+        return x_normed.reshape(batch, pos, n_heads, d_head)

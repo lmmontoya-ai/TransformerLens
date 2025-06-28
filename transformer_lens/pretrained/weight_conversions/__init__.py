@@ -17,4 +17,5 @@ from .phi import convert_phi_weights
 from .phi3 import convert_phi3_weights
 from .qwen import convert_qwen_weights
 from .qwen2 import convert_qwen2_weights
+from .qwen3 import convert_qwen3_weights
 from .t5 import convert_t5_weights
